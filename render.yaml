@@ -1,0 +1,12 @@
+# Render blueprint: New > Blueprint > pick this repository. Set AI__ApiKey when Render asks (it is never stored here).
+services:
+  - type: web
+    name: ai-expense-assistant
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/status
+    envVars:
+      - key: AI__ApiKey
+        sync: false
+      - key: AI__Model
+        value: gemini-3.5-flash

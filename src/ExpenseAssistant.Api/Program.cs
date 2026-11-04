@@ -42,7 +42,18 @@ builder.Services.AddRateLimiter(o =>
         _ => new FixedWindowRateLimiterOptions { PermitLimit = 10, Window = TimeSpan.FromMinutes(1) }));
 });
 
+// Behind a host's proxy (Render, Azure) every request comes from the proxy: read the client address it forwards,
+// or the per-client rate limit would be shared by everyone.
+builder.Services.Configure<Microsoft.AspNetCore.Builder.ForwardedHeadersOptions>(o =>
+{
+    o.ForwardedHeaders = Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedFor | Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedProto;
+    o.ForwardLimit = 1;
+    o.KnownIPNetworks.Clear();
+    o.KnownProxies.Clear();
+});
+
 var app = builder.Build();
+app.UseForwardedHeaders();
 if (app.Environment.IsDevelopment()) app.MapOpenApi();
 else app.UseExceptionHandler("/Error", createScopeForErrors: true);
 app.UseRateLimiter();
