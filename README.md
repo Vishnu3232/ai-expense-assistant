@@ -9,8 +9,13 @@ repository is the AI layer, rebuilt in .NET with tests and made-up sample data.
 
 ## What it shows
 
-- **Provider-neutral AI.** Everything talks to `Microsoft.Extensions.AI.IChatClient`. The default is Google Gemini
-  through its OpenAI-compatible endpoint; Azure OpenAI, OpenAI or a local Ollama model is a configuration change.
+- **Provider-neutral AI, with a fallback chain.** Everything talks to `Microsoft.Extensions.AI.IChatClient`. The live
+  demo runs a self-hosted Llama 3.1 8B (Ollama on a RunPod GPU) first, Google Gemini when that is down, and keyword
+  rules when neither answers. Each answer says which model read it. Any OpenAI-compatible endpoint can be added in
+  configuration (`AI:Providers:N`).
+- **Labels per payee, not per row.** `AiCategorizer` groups rows by masked payee and sends one line per payee: 58 rows
+  with 13 payees is one small call, identical payees always get the same label, and a small model copes well
+  (on the 8B model this went from 4 minutes and inconsistent labels to 4 seconds and all 13 payees right).
 - **Privacy by design.** `PiiMasker` removes UPI ids, phone numbers, card, account and IFSC numbers before anything is
   sent to a model. A test checks the outgoing prompts.
 - **The model never does the maths.** `/api/ask` has the model turn the question into a small `SpendQuery`
@@ -45,6 +50,13 @@ dotnet run
 Settings (`AI` section in appsettings.json, or `AI__*` environment variables): `ApiKey`, `Model` (default
 `gemini-3.5-flash-lite`, which has the largest free quota), `Endpoint`, `PerMinute` / `PerDay` (AI call caps). Google
 retires model names for new keys, so the model is configuration, not code.
+
+Several models in order (first that answers wins):
+
+```
+AI__Providers__0__Name=RunPod   AI__Providers__0__Endpoint=https://<pod>-11434.proxy.runpod.net/v1/   AI__Providers__0__Model=llama3.1:8b   AI__Providers__0__ApiKey=ollama
+AI__Providers__1__Name=Gemini   AI__Providers__1__Model=gemini-3.5-flash-lite   AI__Providers__1__ApiKey=<key>
+```
 
 ## Deploy
 

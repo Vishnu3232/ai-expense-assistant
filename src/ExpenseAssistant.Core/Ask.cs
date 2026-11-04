@@ -21,7 +21,7 @@ public sealed record SpendQuery(
     public static readonly string[] Metrics = ["total", "count", "top_merchants", "by_category", "list"];
 }
 
-public sealed record AskAnswer(string Answer, SpendQuery? Query, IReadOnlyList<Transaction> Rows, bool UsedAi, string? Note = null);
+public sealed record AskAnswer(string Answer, SpendQuery? Query, IReadOnlyList<Transaction> Rows, bool UsedAi, string? Note = null, string? Model = null);
 
 public static class QueryEngine
 {
@@ -94,7 +94,9 @@ public sealed class AskService(IChatClient? chat, TimeProvider clock, Action<Exc
         $"Today is {today:yyyy-MM-dd} (India). Turn the question about personal spending into JSON with these fields:\n" +
         $"metric: one of {string.Join(", ", SpendQuery.Metrics)}; category: one of {string.Join(", ", Categories.All)} or null; " +
         "merchant: a payee name if one is named, else null; from, to: dates as yyyy-MM-dd or null (\"last month\" = the whole " +
-        "previous calendar month); kind: spend or income; limit: number of items for top_merchants or list.\n" +
+        "previous calendar month; \"this month\" = from the 1st of the current month to today; \"since September\" = 1 September " +
+        "to today); kind: spend or income; limit: number of items for top_merchants or list. \"How much\" and \"what did I spend\" " +
+        "mean metric total; \"how many\" means count. Keep a named payee in merchant (\"at Apollo\" -> merchant: \"Apollo\").\n" +
         "Return only the JSON object.\nQuestion: " + question;
 
     public async Task<AskAnswer> AskAsync(string question, IReadOnlyList<Transaction> txs, CancellationToken ct = default)
@@ -104,6 +106,7 @@ public sealed class AskService(IChatClient? chat, TimeProvider clock, Action<Exc
         if (chat is null) return Fallback("AI is not configured");
         if (budget is not null && !budget.TryTake()) return Fallback("AI limit for this demo reached");
         SpendQuery? q;
+        string? modelId;
         try
         {
             var response = await chat.GetResponseAsync(
@@ -111,13 +114,14 @@ public sealed class AskService(IChatClient? chat, TimeProvider clock, Action<Exc
                  new ChatMessage(ChatRole.User, BuildPrompt(question, today))],
                 new ChatOptions { ResponseFormat = ChatResponseFormat.Json, Temperature = 0 }, ct);
             q = ParseQuery(response.Text);
+            modelId = response.ModelId;
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
             onError?.Invoke(e);
             return Fallback(e.Message.Contains("429") || e.Message.Contains("503") ? "AI busy (free-tier limit)" : "AI answer unreadable");
         }
-        return QueryEngine.Run(txs, Validate(q), usedAi: true);
+        return QueryEngine.Run(txs, Validate(q), usedAi: true) with { Model = modelId };
 
         // the model is not available: read the question with keywords, still answer from the data
         AskAnswer Fallback(string why)

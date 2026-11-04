@@ -9,17 +9,30 @@ builder.Services.AddOpenApi();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<RuleCategorizer>();
 
-// Any OpenAI-compatible model works behind IChatClient. Default: Google Gemini (free tier) via its OpenAI endpoint.
-// The key comes from user-secrets or the environment (AI__ApiKey), never from a file in the repository.
+// Any OpenAI-compatible model works behind IChatClient, and several can be chained: AI:Providers:0 (say a self-hosted
+// Llama on a GPU pod), AI:Providers:1 (Gemini) ... The first that answers wins; if none does, keyword rules take over.
+// A plain AI:Endpoint/Model/ApiKey (the single-model form) still works. Keys come from user-secrets or environment
+// variables (AI__ApiKey, AI__Providers__0__ApiKey), never from a file in the repository. Google retires model names
+// for new keys (gemini-2.5-flash answers 404 now), so model names live in configuration too.
 var ai = builder.Configuration.GetSection("AI");
-var apiKey = ai["ApiKey"];
-// Google retires model names for new keys (gemini-2.5-flash answers 404 now), so the name lives in configuration.
-var model = ai["Model"] ?? "gemini-3.5-flash-lite";
-if (!string.IsNullOrWhiteSpace(apiKey))
+var providerSections = ai.GetSection("Providers").GetChildren().ToList();
+if (providerSections.Count == 0) providerSections = [ai];
+var providers = providerSections
+    .Where(p => !string.IsNullOrWhiteSpace(p["ApiKey"]))
+    .Select(p =>
+    {
+        var endpoint = p["Endpoint"] ?? "https://generativelanguage.googleapis.com/v1beta/openai/";
+        var modelName = p["Model"] ?? "gemini-3.5-flash-lite";
+        var name = p["Name"] ?? (endpoint.Contains("googleapis") ? "Gemini" : new Uri(endpoint).Host);
+        IChatClient client = new OpenAIClient(new ApiKeyCredential(p["ApiKey"]!), new OpenAIClientOptions { Endpoint = new Uri(endpoint) })
+            .GetChatClient(modelName).AsIChatClient();
+        return (Name: name, Model: modelName, Client: client);
+    }).ToList();
+var model = providers.Count == 0 ? "none" : string.Join(" → ", providers.Select(p => $"{p.Model} @ {p.Name}"));
+if (providers.Count > 0)
 {
-    builder.Services.AddChatClient(_ => new OpenAIClient(new ApiKeyCredential(apiKey),
-            new OpenAIClientOptions { Endpoint = new Uri(ai["Endpoint"] ?? "https://generativelanguage.googleapis.com/v1beta/openai/") })
-        .GetChatClient(model).AsIChatClient())
+    builder.Services.AddChatClient(sp => providers.Count == 1 ? providers[0].Client
+        : new FallbackChatClient(providers.Select(p => (p.Name, p.Client)).ToList(), (name, e) => sp.GetRequiredService<ILogger<FallbackChatClient>>().LogWarning(e, "{Provider} failed, trying the next", name)))
         .UseLogging();
 }
 // A public demo shares one free key: cap AI calls (over the cap, keyword rules answer instead).
@@ -27,7 +40,8 @@ builder.Services.AddSingleton(sp => new AiBudget(sp.GetRequiredService<TimeProvi
     ai.GetValue("PerMinute", 6), ai.GetValue("PerDay", 200)));
 builder.Services.AddSingleton(sp => new AiStatus(sp.GetService<IChatClient>() is not null, model));
 builder.Services.AddSingleton<ICategorizer>(sp => sp.GetService<IChatClient>() is { } chat
-    ? new AiCategorizer(chat, budget: sp.GetRequiredService<AiBudget>())
+    ? new AiCategorizer(chat, budget: sp.GetRequiredService<AiBudget>(),
+        onError: e => sp.GetRequiredService<ILogger<AiCategorizer>>().LogWarning(e, "Categorize batch failed"))
     : sp.GetRequiredService<RuleCategorizer>());
 builder.Services.AddSingleton(sp => new AskService(sp.GetService<IChatClient>(), sp.GetRequiredService<TimeProvider>(),
     e => sp.GetRequiredService<ILogger<AskService>>().LogWarning(e, "Ask failed"), sp.GetRequiredService<AiBudget>()));

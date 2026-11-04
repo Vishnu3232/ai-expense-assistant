@@ -35,7 +35,7 @@
         <p class="q">@turn.Question</p>
         <p class="a">@turn.Answer.Answer</p>
         <div class="how">
-            <span class="tag @(turn.Answer.UsedAi ? "ai" : "rules")">@(turn.Answer.UsedAi ? "read by AI" : "read by keyword rules")</span>
+            <span class="tag @(turn.Answer.UsedAi ? "ai" : "rules")">@(turn.Answer.UsedAi ? $"read by AI · {turn.Answer.Model ?? Status.Model}" : "read by keyword rules")</span>
             @if (turn.Answer.Note is not null) { <span class="muted">@turn.Answer.Note</span> }
             <span class="muted">@turn.Ms ms</span>
         </div>
@@ -130,7 +130,8 @@
             var labels = await Categorizer.CategorizeAsync(Store.All);
             Store.Apply(labels);
             catNote = Categorizer is AiCategorizer ai
-                ? $"{ai.LastAiCount} labelled by the AI, {ai.LastRuleCount} by keyword rules (AI busy or over the demo limit)."
+                ? $"{ai.LastAiCount} rows labelled by the AI in {ai.LastCalls} call{(ai.LastCalls == 1 ? "" : "s")} (one line per payee, not per row), " +
+                  $"{ai.LastRuleCount} by keyword rules{(ai.LastRuleCount > 0 ? " (AI busy or over the demo limit)" : "")}."
                 : "Labelled by keyword rules (no AI key configured).";
         }
         finally { busy = false; }

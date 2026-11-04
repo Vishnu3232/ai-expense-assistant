@@ -54,14 +54,31 @@ public class AiCategorizerTests
 {
     private static readonly IReadOnlyList<Transaction> Data = SampleData.Create(new DateOnly(2026, 11, 20), months: 1);
 
+    /// <summary>Answers from the payee lines in the prompt: RAVI KUMAR -> Family, everyone else -> "food" (lower case on purpose).</summary>
+    private static string AnswerByPayee(string prompt) => "```json\n{\"labels\": [" + string.Join(",",
+        System.Text.RegularExpressions.Regex.Matches(prompt, "\"id\":(\\d+),\"payee\":\"([^\"]+)\"")
+            .Select(m => $"{{\"id\":{m.Groups[1].Value},\"category\":\"{(m.Groups[2].Value == "RAVI KUMAR" ? "Family" : "food")}\"}}")) + "]}\n```";
+
     [Fact]
     public async Task Uses_the_model_answer_when_it_is_valid()
     {
-        var fake = new FakeChatClient(p => "```json\n[" + string.Join(",", Data.Select(t => $"{{\"id\":{t.Id},\"category\":\"{(t.Merchant == "RAVI KUMAR" ? "Family" : "food")}\"}}")) + "]\n```");
-        var labels = await new AiCategorizer(fake).CategorizeAsync(Data);
+        var fake = new FakeChatClient(AnswerByPayee);
+        var cat = new AiCategorizer(fake);
+        var labels = await cat.CategorizeAsync(Data);
         Assert.Equal(Data.Count, labels.Count);
         Assert.All(Data.Where(t => t.Merchant == "RAVI KUMAR"), t => Assert.Equal("Family", labels[t.Id]));
         Assert.All(Data.Where(t => t.Merchant != "RAVI KUMAR"), t => Assert.Equal("Food", labels[t.Id]));   // "food" normalised
+        Assert.Equal((Data.Count, 0, 1), (cat.LastAiCount, cat.LastRuleCount, cat.LastCalls));                // one call for all payees
+    }
+
+    [Fact]
+    public void Groups_rows_by_payee_so_every_swiggy_row_gets_one_answer()
+    {
+        var payees = AiCategorizer.GroupPayees(Data);
+        Assert.Equal(Data.Select(t => t.Merchant).Distinct().Count(), payees.Count);
+        var swiggy = payees.Single(p => p.Name == "SWIGGY");
+        Assert.Equal(Data.Count(t => t.Merchant == "SWIGGY"), swiggy.Payments);
+        Assert.DoesNotContain("@", swiggy.Sample);
     }
 
     [Fact]
@@ -90,12 +107,38 @@ public class AiCategorizerTests
         Assert.Equal((0, Data.Count), (cat.LastAiCount, cat.LastRuleCount));     // the outage is visible, not silent
     }
 
+    [Theory]
+    [InlineData("[{\"id\": 1, \"category\": \"Food\"}, {\"id\": \"2\", \"label\": \"Other\"}]", 2)]            // bare array, string id, "label"
+    [InlineData("{\"labels\": [{\"id\": 1, \"category\": \"Food\"}, {\"id\": 2, \"category\": \"Other\"}]}", 2)]   // the asked-for shape
+    [InlineData("```json\n{\"results\": [{\"id\": 1, \"category\": \"Food\"}]}\n```", 1)]                      // fenced, other key
+    [InlineData("{\"id\": 1, \"category\": \"Food\"}", 1)]                                                       // one object, no array
+    [InlineData("{\"note\": \"no labels\"}", 0)]
+    public void Reads_labels_in_any_shape(string json, int count) => Assert.Equal(count, AiCategorizer.ParseLabels(json).Count);
+
     [Fact]
-    public async Task Sends_big_lists_in_batches()
+    public async Task Sends_big_lists_in_batches_of_payees()
     {
         var fake = new FakeChatClient(_ => "[]");
-        await new AiCategorizer(fake, batchSize: 10).CategorizeAsync(Data);
-        Assert.Equal((Data.Count + 9) / 10, fake.Prompts.Count);
+        await new AiCategorizer(fake, batchSize: 5).CategorizeAsync(Data);
+        var payees = Data.Select(t => t.Merchant).Distinct().Count();
+        Assert.Equal((payees + 4) / 5, fake.Prompts.Count);
+    }
+
+    [Fact]
+    public async Task Fallback_client_uses_the_next_model_when_one_fails()
+    {
+        var down = new FakeChatClient(_ => throw new HttpRequestException("Status: 503"));
+        var up = new FakeChatClient(_ => "{\"ok\":true}");
+        var failed = new List<string>();
+        var chain = new FallbackChatClient([("llama @ pod", down), ("gemini", up)], (n, _) => failed.Add(n));
+        var r = await chain.GetResponseAsync([new ChatMessage(ChatRole.User, "hi")]);
+        Assert.Equal("{\"ok\":true}", r.Text);
+        Assert.EndsWith("(gemini)", r.ModelId);
+        Assert.Equal(["llama @ pod"], failed);
+        Assert.Single(up.Prompts);
+
+        var allDown = new FallbackChatClient([("a", down), ("b", down)]);
+        await Assert.ThrowsAsync<HttpRequestException>(() => allDown.GetResponseAsync([new ChatMessage(ChatRole.User, "hi")]));
     }
 }
 
