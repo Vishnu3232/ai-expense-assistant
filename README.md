@@ -15,6 +15,11 @@ repository is the AI layer, rebuilt in .NET with tests and made-up sample data.
   transactions and cannot invent a total.
 - **Graceful degradation.** Unknown labels, malformed JSON, quota errors or no API key fall back to deterministic
   keyword rules. The app works with no AI at all.
+- **Safe to put online.** `AiBudget` caps model calls per minute and per day, and the API is rate limited per client.
+  Over the cap, or when the model is busy, `KeywordQuestionParser` reads common questions with rules, so the demo
+  always answers and says which path was used.
+- **Blazor UI.** A chat-style page (interactive server rendering) shows the answer, how it was read (AI or rules), the
+  query the question became, and each transaction next to the masked text the model would see.
 - **Tested without a network.** A scripted `IChatClient` drives unit tests and in-memory API tests
   (`WebApplicationFactory`). The test run needs no API key.
 

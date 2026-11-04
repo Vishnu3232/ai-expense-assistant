@@ -45,7 +45,7 @@ public sealed class RuleCategorizer : ICategorizer
 /// Asks the model (any <see cref="IChatClient"/>: Gemini, Azure OpenAI, Ollama...) to label transactions.
 /// Only masked text goes out; answers outside the allowed list, or a failed call, fall back to the rules.
 /// </summary>
-public sealed class AiCategorizer(IChatClient chat, int batchSize = 40) : ICategorizer
+public sealed class AiCategorizer(IChatClient chat, int batchSize = 40, AiBudget? budget = null) : ICategorizer
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
@@ -61,7 +61,7 @@ public sealed class AiCategorizer(IChatClient chat, int batchSize = 40) : ICateg
         int byAi = 0, byRules = 0;
         foreach (var batch in txs.Chunk(batchSize))
         {
-            var answered = await AskAsync(batch, ct);
+            var answered = budget is null || budget.TryTake() ? await AskAsync(batch, ct) : [];   // over the cap: rules
             foreach (var t in batch)
             {
                 if (answered.TryGetValue(t.Id, out var c)) { result[t.Id] = c; byAi++; }

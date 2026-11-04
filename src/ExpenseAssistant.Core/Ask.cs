@@ -21,7 +21,7 @@ public sealed record SpendQuery(
     public static readonly string[] Metrics = ["total", "count", "top_merchants", "by_category", "list"];
 }
 
-public sealed record AskAnswer(string Answer, SpendQuery? Query, IReadOnlyList<Transaction> Rows, bool UsedAi);
+public sealed record AskAnswer(string Answer, SpendQuery? Query, IReadOnlyList<Transaction> Rows, bool UsedAi, string? Note = null);
 
 public static class QueryEngine
 {
@@ -71,7 +71,7 @@ public static class QueryEngine
 }
 
 /// <summary>Turns a plain-language question into a <see cref="SpendQuery"/> with the model, then answers it locally.</summary>
-public sealed class AskService(IChatClient? chat, TimeProvider clock, Action<Exception>? onError = null)
+public sealed class AskService(IChatClient? chat, TimeProvider clock, Action<Exception>? onError = null, AiBudget? budget = null)
 {
     /// <summary>Reads the model's JSON leniently: nulls, "5" for 5, dates with a time part, missing fields.</summary>
     public static SpendQuery ParseQuery(string text)
@@ -101,7 +101,8 @@ public sealed class AskService(IChatClient? chat, TimeProvider clock, Action<Exc
     {
         if (string.IsNullOrWhiteSpace(question)) return new AskAnswer("Ask something like \"How much did I spend on food last month?\"", null, [], false);
         var today = DateOnly.FromDateTime(clock.GetLocalNow().DateTime);
-        if (chat is null) return new AskAnswer("The AI is not set up (no Gemini key), so questions cannot be read yet.", null, [], false);
+        if (chat is null) return Fallback("AI is not configured");
+        if (budget is not null && !budget.TryTake()) return Fallback("AI limit for this demo reached");
         SpendQuery? q;
         try
         {
@@ -114,11 +115,16 @@ public sealed class AskService(IChatClient? chat, TimeProvider clock, Action<Exc
         catch (Exception e) when (e is not OperationCanceledException)
         {
             onError?.Invoke(e);
-            var busy = e.Message.Contains("429") || e.Message.Contains("503");
-            return new AskAnswer(busy ? "The AI is busy (free-tier limit). Try again in a minute."
-                : "The AI answer could not be read. Try asking another way.", null, [], true);
+            return Fallback(e.Message.Contains("429") || e.Message.Contains("503") ? "AI busy (free-tier limit)" : "AI answer unreadable");
         }
         return QueryEngine.Run(txs, Validate(q), usedAi: true);
+
+        // the model is not available: read the question with keywords, still answer from the data
+        AskAnswer Fallback(string why)
+        {
+            var a = QueryEngine.Run(txs, Validate(KeywordQuestionParser.Parse(question, today, txs.Select(t => t.Merchant))), usedAi: false);
+            return a with { Note = why + "; answered with keyword rules" };
+        }
     }
 
     /// <summary>Never trust model output: unknown metric/category/kind are reset, dates are put in order.</summary>

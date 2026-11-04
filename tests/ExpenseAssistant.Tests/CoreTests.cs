@@ -147,10 +147,48 @@ public class AskTests
     }
 
     [Fact]
-    public async Task Without_a_key_it_says_so()
+    public async Task Without_a_key_keyword_rules_still_answer()
     {
-        var a = await new AskService(null, TimeProvider.System).AskAsync("food?", Data);
-        Assert.Contains("not set up", a.Answer);
-        Assert.Null(a.Query);
+        var clock = new FixedClock(new DateTimeOffset(2026, 11, 20, 9, 0, 0, TimeSpan.Zero));
+        var a = await new AskService(null, clock).AskAsync("How much did I spend on food last month?", Data);
+        var expected = Data.Where(t => t.Kind == TxKind.Debit && t.Category == "Food" && t.Date.Month == 10).Sum(t => t.Amount);
+        Assert.Contains(QueryEngine.Inr(expected), a.Answer);
+        Assert.False(a.UsedAi);
+        Assert.Contains("keyword rules", a.Note);
+    }
+
+    [Fact]
+    public async Task Busy_model_falls_back_to_keyword_rules()
+    {
+        var clock = new FixedClock(new DateTimeOffset(2026, 11, 20, 9, 0, 0, TimeSpan.Zero));
+        var busy = new FakeChatClient(_ => throw new HttpRequestException("Status: 429 (Too Many Requests)"));
+        var a = await new AskService(busy, clock).AskAsync("How many times did I take Uber in the last 2 months?", Data);
+        Assert.Equal(("count", "uber"), (a.Query!.Metric, a.Query.Merchant));
+        Assert.Contains("AI busy", a.Note);
+    }
+
+    [Theory]
+    [InlineData("How much did I spend on food last month?", "total", "Food", null, "2026-10-01", "2026-10-31")]
+    [InlineData("top 3 payees this month", "top_merchants", null, null, "2026-11-01", "2026-11-20")]
+    [InlineData("What did I spend at Apollo since September?", "total", null, "apollo", "2026-09-01", "2026-11-20")]
+    [InlineData("how many swiggy orders in the last 2 months", "count", null, "swiggy", "2026-09-01", "2026-11-20")]
+    [InlineData("salary received this year", "total", null, null, "2026-01-01", "2026-11-20")]
+    public void Keyword_parser_reads_common_questions(string question, string metric, string? category, string? merchant, string from, string to)
+    {
+        var q = KeywordQuestionParser.Parse(question, Today, Data.Select(t => t.Merchant));
+        Assert.Equal((metric, category, merchant, DateOnly.Parse(from), DateOnly.Parse(to)), (q.Metric, q.Category, q.Merchant, q.From!.Value, q.To!.Value));
+    }
+
+    [Fact]
+    public async Task Ai_budget_caps_calls_per_minute()
+    {
+        var clock = new FixedClock(new DateTimeOffset(2026, 11, 20, 9, 0, 0, TimeSpan.Zero));
+        var budget = new AiBudget(clock, perMinute: 2, perDay: 10);
+        var fake = new FakeChatClient(_ => "{\"metric\":\"total\"}");
+        var ask = new AskService(fake, clock, budget: budget);
+        var used = new List<bool>();
+        for (var i = 0; i < 4; i++) used.Add((await ask.AskAsync("food this month", Data)).UsedAi);
+        Assert.Equal([true, true, false, false], used);
+        Assert.Equal(2, fake.Prompts.Count);
     }
 }

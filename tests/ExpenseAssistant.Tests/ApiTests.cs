@@ -33,6 +33,28 @@ public class ApiTests
     }
 
     [Fact]
+    public async Task Home_page_renders_with_sample_data_and_masked_text()
+    {
+        using var app = App(null);
+        var html = await app.CreateClient().GetStringAsync("/");
+        Assert.Contains("AI Expense Assistant", html);
+        Assert.Contains("SWIGGY", html);
+        Assert.Contains("[upi]", html);                      // the "what the AI sees" line is masked
+        Assert.DoesNotContain("@okaxis", html);
+    }
+
+    [Fact]
+    public async Task Ask_is_rate_limited_per_client()
+    {
+        using var app = App(null);
+        var http = app.CreateClient();
+        var codes = new List<int>();
+        for (var i = 0; i < 12; i++) codes.Add((int)(await http.PostAsJsonAsync("/api/ask", new { question = "food this month" })).StatusCode);
+        Assert.Equal(10, codes.Count(c => c == 200));
+        Assert.Equal(2, codes.Count(c => c == 429));
+    }
+
+    [Fact]
     public async Task Ask_end_to_end_with_a_scripted_model()
     {
         var fake = new FakeChatClient(p => p.Contains("Question:")

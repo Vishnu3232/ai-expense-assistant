@@ -1,0 +1,143 @@
+@page "/"
+@rendermode InteractiveServer
+@inject TransactionStore Store
+@inject AskService Ask
+@inject ICategorizer Categorizer
+@inject AiBudget Budget
+@inject AiStatus Status
+
+<PageTitle>AI Expense Assistant</PageTitle>
+
+<header class="top">
+    <div>
+        <h1>AI Expense Assistant</h1>
+        <p class="sub">Ask about the spending in this sample account. The model writes a small query; the totals are worked out in C#.</p>
+    </div>
+    <span class="pill @(Status.Enabled ? "on" : "off")" title="@BudgetText">@(Status.Enabled ? $"AI: {Status.Model}" : "AI off: keyword rules")</span>
+</header>
+
+<section class="card ask">
+    <form @onsubmit="Submit" class="ask-row">
+        <input @bind="question" @bind:event="oninput" placeholder="e.g. How much did I spend on food last month?" aria-label="Your question" maxlength="200" />
+        <button type="submit" disabled="@(busy || string.IsNullOrWhiteSpace(question))">@(busy ? "Thinking…" : "Ask")</button>
+    </form>
+    <div class="chips">
+        @foreach (var s in Suggestions)
+        {
+            <button type="button" class="chip" disabled="@busy" @onclick="() => AskThis(s)">@s</button>
+        }
+    </div>
+</section>
+
+@foreach (var turn in history)
+{
+    <section class="card turn">
+        <p class="q">@turn.Question</p>
+        <p class="a">@turn.Answer.Answer</p>
+        <div class="how">
+            <span class="tag @(turn.Answer.UsedAi ? "ai" : "rules")">@(turn.Answer.UsedAi ? "read by AI" : "read by keyword rules")</span>
+            @if (turn.Answer.Note is not null) { <span class="muted">@turn.Answer.Note</span> }
+            <span class="muted">@turn.Ms ms</span>
+        </div>
+        @if (turn.Answer.Query is { } q)
+        {
+            <details>
+                <summary>What the question became</summary>
+                <code>@QueryText(q)</code>
+            </details>
+        }
+        @if (turn.Answer.Rows.Count > 0 && turn.Answer.Query?.Metric is "list" or "count")
+        {
+            <ul class="rows">
+                @foreach (var t in turn.Answer.Rows.Take(8))
+                {
+                    <li><span>@t.Date.ToString("d MMM")</span><span class="m">@t.Merchant</span><span class="amt">@QueryEngine.Inr(t.Amount)</span></li>
+                }
+            </ul>
+        }
+    </section>
+}
+
+<section class="card">
+    <div class="head">
+        <h2>Transactions <span class="muted">(@Store.All.Count, sample)</span></h2>
+        <button type="button" class="ghost" disabled="@busy" @onclick="Categorize">Label with AI</button>
+    </div>
+    @if (catNote is not null) { <p class="muted small">@catNote</p> }
+    <div class="bycat">
+        @foreach (var g in Store.All.Where(t => t.Kind == TxKind.Debit && !Categories.NonSpend.Contains(t.Category))
+                                .GroupBy(t => t.Category).OrderByDescending(g => g.Sum(t => t.Amount)))
+        {
+            <span class="chip static">@g.Key <b>@QueryEngine.Inr(g.Sum(t => t.Amount))</b></span>
+        }
+    </div>
+    <table>
+        <thead><tr><th>Date</th><th>Payee</th><th>Category</th><th class="r">Amount</th></tr></thead>
+        <tbody>
+            @foreach (var t in Store.All.OrderByDescending(t => t.Date).ThenByDescending(t => t.Id).Take(showAll ? 500 : 12))
+            {
+                <tr>
+                    <td>@t.Date.ToString("d MMM")</td>
+                    <td><div>@t.Merchant</div><div class="masked" title="What the AI sees">@PiiMasker.Mask(t.Narration)</div></td>
+                    <td>@t.Category</td>
+                    <td class="r @(t.Kind == TxKind.Credit ? "in" : "")">@(t.Kind == TxKind.Credit ? "+" : "")@QueryEngine.Inr(t.Amount)</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+    @if (!showAll && Store.All.Count > 12) { <button type="button" class="ghost" @onclick="() => showAll = true">Show all @Store.All.Count</button> }
+</section>
+
+@code {
+    private sealed record Turn(string Question, AskAnswer Answer, long Ms);
+
+    private static readonly string[] Suggestions =
+    [
+        "How much did I spend on food last month?", "Top 3 payees this month", "How many Uber rides in the last 2 months?",
+        "What did I spend at Apollo since September?", "Spending by category this month",
+    ];
+
+    private string question = "";
+    private bool busy, showAll;
+    private string? catNote;
+    private readonly List<Turn> history = [];
+
+    private string BudgetText => $"AI calls used: {Budget.Usage.LastMinute}/{Budget.Usage.PerMinute} this minute, {Budget.Usage.Today}/{Budget.Usage.PerDay} today";
+
+    private Task AskThis(string s) { question = s; return Submit(); }
+
+    private async Task Submit()
+    {
+        var text = question.Trim();
+        if (busy || text.Length == 0) return;
+        busy = true;
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            var a = await Ask.AskAsync(text, Store.All);
+            history.Insert(0, new Turn(text, a, sw.ElapsedMilliseconds));
+            if (history.Count > 6) history.RemoveAt(history.Count - 1);
+            question = "";
+        }
+        finally { busy = false; }
+    }
+
+    private async Task Categorize()
+    {
+        busy = true;
+        try
+        {
+            var labels = await Categorizer.CategorizeAsync(Store.All);
+            Store.Apply(labels);
+            catNote = Categorizer is AiCategorizer ai
+                ? $"{ai.LastAiCount} labelled by the AI, {ai.LastRuleCount} by keyword rules (AI busy or over the demo limit)."
+                : "Labelled by keyword rules (no AI key configured).";
+        }
+        finally { busy = false; }
+    }
+
+    private static string QueryText(SpendQuery q) =>
+        $"metric={q.Metric}" + (q.Category is null ? "" : $", category={q.Category}") + (q.Merchant is null ? "" : $", merchant={q.Merchant}") +
+        (q.From is null ? "" : $", from={q.From:yyyy-MM-dd}") + (q.To is null ? "" : $", to={q.To:yyyy-MM-dd}") + $", kind={q.Kind}" +
+        (q.Metric is "top_merchants" or "list" ? $", limit={q.Limit}" : "");
+}

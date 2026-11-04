@@ -1,4 +1,5 @@
 using System.ClientModel;
+using System.Threading.RateLimiting;
 using ExpenseAssistant.Core;
 using Microsoft.Extensions.AI;
 using OpenAI;
@@ -21,18 +22,35 @@ if (!string.IsNullOrWhiteSpace(apiKey))
         .GetChatClient(model).AsIChatClient())
         .UseLogging();
 }
+// A public demo shares one free key: cap AI calls (over the cap, keyword rules answer instead).
+builder.Services.AddSingleton(sp => new AiBudget(sp.GetRequiredService<TimeProvider>(),
+    ai.GetValue("PerMinute", 6), ai.GetValue("PerDay", 200)));
+builder.Services.AddSingleton(sp => new AiStatus(sp.GetService<IChatClient>() is not null, model));
 builder.Services.AddSingleton<ICategorizer>(sp => sp.GetService<IChatClient>() is { } chat
-    ? new AiCategorizer(chat)
+    ? new AiCategorizer(chat, budget: sp.GetRequiredService<AiBudget>())
     : sp.GetRequiredService<RuleCategorizer>());
 builder.Services.AddSingleton(sp => new AskService(sp.GetService<IChatClient>(), sp.GetRequiredService<TimeProvider>(),
-    e => sp.GetRequiredService<ILogger<AskService>>().LogWarning(e, "Ask failed")));
+    e => sp.GetRequiredService<ILogger<AskService>>().LogWarning(e, "Ask failed"), sp.GetRequiredService<AiBudget>()));
 builder.Services.AddSingleton(sp => new TransactionStore(
-    SampleData.Create(DateOnly.FromDateTime(sp.GetRequiredService<TimeProvider>().GetLocalNow().DateTime))));
+    SampleData.Create(DateOnly.FromDateTime(sp.GetRequiredService<TimeProvider>().GetLocalNow().DateTime))
+        .Select(t => t with { Category = RuleCategorizer.Guess(t) }).ToList()));      // shown labelled; "Label with AI" relabels
+builder.Services.AddRazorComponents().AddInteractiveServerComponents();
+builder.Services.AddRateLimiter(o =>
+{
+    o.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    o.AddPolicy("per-ip", ctx => RateLimitPartition.GetFixedWindowLimiter(ctx.Connection.RemoteIpAddress?.ToString() ?? "?",
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = 10, Window = TimeSpan.FromMinutes(1) }));
+});
 
 var app = builder.Build();
 if (app.Environment.IsDevelopment()) app.MapOpenApi();
+else app.UseExceptionHandler("/Error", createScopeForErrors: true);
+app.UseRateLimiter();
+app.UseAntiforgery();
+app.MapStaticAssets();
+app.MapRazorComponents<ExpenseAssistant.Api.Components.App>().AddInteractiveServerRenderMode();
 
-app.MapGet("/api/status", (IServiceProvider sp) => new { ai = sp.GetService<IChatClient>() is not null, model });
+app.MapGet("/api/status", (AiStatus s, AiBudget b) => new { ai = s.Enabled, model = s.Model, usage = new { b.Usage.LastMinute, b.Usage.Today } });
 
 app.MapGet("/api/transactions", (TransactionStore store, string? category) =>
     store.All.Where(t => category is null || t.Category.Equals(category, StringComparison.OrdinalIgnoreCase)).OrderByDescending(t => t.Date));
@@ -48,14 +66,16 @@ app.MapPost("/api/categorize", async (TransactionStore store, ICategorizer categ
         byAi = (categorizer as AiCategorizer)?.LastAiCount, byRules = (categorizer as AiCategorizer)?.LastRuleCount,
         byCategory = store.All.GroupBy(t => t.Category).ToDictionary(g => g.Key, g => g.Count()),
     };
-});
+}).RequireRateLimiting("per-ip");
 
 app.MapPost("/api/ask", async (AskRequest req, TransactionStore store, AskService ask, CancellationToken ct) =>
-    Results.Ok(await ask.AskAsync(req.Question, store.All, ct)));
+    req.Question is { Length: > 200 } ? Results.BadRequest("Keep questions under 200 characters.")
+        : Results.Ok(await ask.AskAsync(req.Question ?? "", store.All, ct))).RequireRateLimiting("per-ip");
 
 app.Run();
 
-public sealed record AskRequest(string Question);
+public sealed record AskRequest(string? Question);
+public sealed record AiStatus(bool Enabled, string Model);
 
 /// <summary>In-memory transactions for the demo (a real deployment would use a database).</summary>
 public sealed class TransactionStore(IReadOnlyList<Transaction> seed)
