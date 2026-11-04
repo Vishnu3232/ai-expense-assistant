@@ -1,0 +1,15 @@
+@host = http://localhost:5156
+
+GET {{host}}/api/status
+
+###
+GET {{host}}/api/transactions?category=Food
+
+###
+POST {{host}}/api/categorize
+
+###
+POST {{host}}/api/ask
+Content-Type: application/json
+
+{ "question": "How much did I spend on food last month?" }

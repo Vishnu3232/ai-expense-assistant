@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/ExpenseAssistant.Api/ExpenseAssistant.Api.csproj" />
+    <Project Path="src/ExpenseAssistant.Core/ExpenseAssistant.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/ExpenseAssistant.Tests/ExpenseAssistant.Tests.csproj" />
+  </Folder>
+</Solution>
