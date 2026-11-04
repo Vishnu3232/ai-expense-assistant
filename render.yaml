@@ -9,4 +9,4 @@ services:
       - key: AI__ApiKey
         sync: false
       - key: AI__Model
-        value: gemini-3.5-flash
+        value: gemini-3.5-flash-lite

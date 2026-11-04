@@ -14,7 +14,7 @@ builder.Services.AddSingleton<RuleCategorizer>();
 var ai = builder.Configuration.GetSection("AI");
 var apiKey = ai["ApiKey"];
 // Google retires model names for new keys (gemini-2.5-flash answers 404 now), so the name lives in configuration.
-var model = ai["Model"] ?? "gemini-3.5-flash";
+var model = ai["Model"] ?? "gemini-3.5-flash-lite";
 if (!string.IsNullOrWhiteSpace(apiKey))
 {
     builder.Services.AddChatClient(_ => new OpenAIClient(new ApiKeyCredential(apiKey),

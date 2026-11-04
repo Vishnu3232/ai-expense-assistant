@@ -1,6 +1,9 @@
 # AI Expense Assistant (.NET 10)
 
-An ASP.NET Core API that categorises Indian bank transactions with an LLM and answers plain-language questions about
+**Live demo:** https://ai-expense-assistant-g0ib.onrender.com (free hosting: the first visit after a quiet spell can take
+about a minute to wake up; the AI has a small daily free quota, after which keyword rules answer and the page says so).
+
+An ASP.NET Core API and Blazor page that categorises Indian bank transactions with an LLM and answers plain-language questions about
 spending ("How much did I spend on food last month?"). It grew out of a personal expense tracker I use every day; this
 repository is the AI layer, rebuilt in .NET with tests and made-up sample data.
 
@@ -40,7 +43,13 @@ dotnet run
 | `POST /api/ask` `{"question": "..."}` | Answers a spending question |
 
 Settings (`AI` section in appsettings.json, or `AI__*` environment variables): `ApiKey`, `Model` (default
-`gemini-3.5-flash`), `Endpoint`. Google retires model names for new keys, so the model is configuration, not code.
+`gemini-3.5-flash-lite`, which has the largest free quota), `Endpoint`, `PerMinute` / `PerDay` (AI call caps). Google
+retires model names for new keys, so the model is configuration, not code.
+
+## Deploy
+
+`Dockerfile` builds, runs the tests and publishes the API. `render.yaml` is a Render blueprint (free plan); set
+`AI__ApiKey` in the host's secrets. Behind a proxy the app reads the forwarded client address for its rate limit.
 `POST /api/categorize` reports how many labels came from the model and how many fell back to the rules.
 
 ## Layout
