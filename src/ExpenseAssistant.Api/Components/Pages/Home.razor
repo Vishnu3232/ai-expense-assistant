@@ -5,91 +5,140 @@
 @inject ICategorizer Categorizer
 @inject AiBudget Budget
 @inject AiStatus Status
+@inject TimeProvider Clock
 
-<PageTitle>AI Expense Assistant</PageTitle>
+<PageTitle>AI Expense Assistant · .NET 10</PageTitle>
 
-<header class="top">
-    <div>
-        <h1>AI Expense Assistant</h1>
-        <p class="sub">Ask about the spending in this sample account. The model writes a small query; the totals are worked out in C#.</p>
+<header class="hero">
+    <div class="hero-text">
+        <span class="eyebrow">.NET 10 · Blazor · Microsoft.Extensions.AI</span>
+        <h1>Ask your bank statement anything</h1>
+        <p class="sub">Plain-English questions over a sample Indian bank account. The model only turns your question into a
+            small query. Every number is calculated in C#, and personal details are masked before anything leaves the server.</p>
     </div>
-    <span class="pill @(Status.Enabled ? "on" : "off")" title="@BudgetText">@(Status.Enabled ? $"AI: {Status.Model}" : "AI off: keyword rules")</span>
+    <ol class="steps" aria-label="How it works">
+        <li><b>1</b><div><strong>Mask</strong><span>UPI ids, phones, accounts removed</span></div></li>
+        <li><b>2</b><div><strong>AI writes a query</strong><span>metric, category, dates</span></div></li>
+        <li><b>3</b><div><strong>C# does the maths</strong><span>no invented totals</span></div></li>
+    </ol>
 </header>
+
+<section class="chain card" aria-label="AI providers">
+    <span class="chain-label">AI chain</span>
+    @foreach (var (p, i) in Providers.Select((p, i) => (p, i)))
+    {
+        @if (i > 0) { <span class="arrow" aria-hidden="true">→</span> }
+        <span class="node @(LastSource == p ? "hit" : "")">@p</span>
+    }
+    <span class="arrow" aria-hidden="true">→</span>
+    <span class="node rules @(LastSource == "rules" ? "hit" : "")">Keyword rules</span>
+    <span class="usage" title="Caps keep the free quota safe">@Budget.Usage.Today / @Budget.Usage.PerDay AI calls today</span>
+</section>
+
+<section class="stats">
+    <div class="stat"><span class="k">Spent this month</span><span class="v">@QueryEngine.Inr(MonthSpend)</span><span class="s">@MonthCount payments</span></div>
+    <div class="stat"><span class="k">Last month</span><span class="v">@QueryEngine.Inr(LastMonthSpend)</span><span class="s">@MonthName(-1)</span></div>
+    <div class="stat"><span class="k">Top category</span><span class="v">@(TopCategory?.Key ?? "–")</span><span class="s">@(TopCategory is null ? "" : QueryEngine.Inr(TopCategory.Sum(t => t.Amount)) + " in 3 months")</span></div>
+</section>
 
 <section class="card ask">
     <form @onsubmit="Submit" class="ask-row">
-        <input @bind="question" @bind:event="oninput" placeholder="e.g. How much did I spend on food last month?" aria-label="Your question" maxlength="200" />
+        <input @bind="question" @bind:event="oninput" placeholder="Ask, e.g. How much did I spend on food last month?" aria-label="Your question" maxlength="200" autocomplete="off" />
         <button type="submit" disabled="@(busy || string.IsNullOrWhiteSpace(question))">@(busy ? "Thinking…" : "Ask")</button>
     </form>
-    <div class="chips">
+    <div class="chips" aria-label="Try these">
         @foreach (var s in Suggestions)
         {
             <button type="button" class="chip" disabled="@busy" @onclick="() => AskThis(s)">@s</button>
         }
     </div>
-</section>
 
-@foreach (var turn in history)
-{
-    <section class="card turn">
-        <p class="q">@turn.Question</p>
-        <p class="a">@turn.Answer.Answer</p>
-        <div class="how">
-            <span class="tag @(turn.Answer.UsedAi ? "ai" : "rules")">@(turn.Answer.UsedAi ? $"read by AI · {turn.Answer.Model ?? Status.Model}" : "read by keyword rules")</span>
-            @if (turn.Answer.Note is not null) { <span class="muted">@turn.Answer.Note</span> }
-            <span class="muted">@turn.Ms ms</span>
+    @if (busy && pending is not null)
+    {
+        <div class="msg me">@pending</div>
+        <div class="msg bot typing" aria-live="polite"><i></i><i></i><i></i></div>
+    }
+    @foreach (var turn in history)
+    {
+        <div class="msg me">@turn.Question</div>
+        <div class="msg bot">
+            <p class="a">@turn.Answer.Answer</p>
+            <div class="how">
+                <span class="tag @(turn.Answer.UsedAi ? "ai" : "rules")">@(turn.Answer.UsedAi ? "AI · " + ShortModel(turn.Answer.Model) : "keyword rules")</span>
+                <span class="muted">@turn.Ms ms</span>
+                @if (turn.Answer.Note is not null) { <span class="muted">@turn.Answer.Note</span> }
+            </div>
+            @if (turn.Answer.Query is { } q)
+            {
+                <details>
+                    <summary>The query the AI wrote</summary>
+                    <div class="q-grid">
+                        <span>metric</span><b>@q.Metric</b>
+                        @if (q.Category is not null) { <span>category</span><b>@q.Category</b> }
+                        @if (q.Merchant is not null) { <span>merchant</span><b>@q.Merchant</b> }
+                        @if (q.From is not null) { <span>from</span><b>@q.From?.ToString("d MMM yyyy")</b> }
+                        @if (q.To is not null) { <span>to</span><b>@q.To?.ToString("d MMM yyyy")</b> }
+                        <span>kind</span><b>@q.Kind</b>
+                    </div>
+                </details>
+            }
+            @if (turn.Answer.Rows.Count > 0 && turn.Answer.Query?.Metric is "list" or "count")
+            {
+                <ul class="rows">
+                    @foreach (var t in turn.Answer.Rows.Take(6))
+                    {
+                        <li><span>@t.Date.ToString("d MMM")</span><span class="m">@t.Merchant</span><span class="amt">@QueryEngine.Inr(t.Amount)</span></li>
+                    }
+                </ul>
+            }
         </div>
-        @if (turn.Answer.Query is { } q)
-        {
-            <details>
-                <summary>What the question became</summary>
-                <code>@QueryText(q)</code>
-            </details>
-        }
-        @if (turn.Answer.Rows.Count > 0 && turn.Answer.Query?.Metric is "list" or "count")
-        {
-            <ul class="rows">
-                @foreach (var t in turn.Answer.Rows.Take(8))
-                {
-                    <li><span>@t.Date.ToString("d MMM")</span><span class="m">@t.Merchant</span><span class="amt">@QueryEngine.Inr(t.Amount)</span></li>
-                }
-            </ul>
-        }
-    </section>
-}
+    }
+</section>
 
 <section class="card">
     <div class="head">
-        <h2>Transactions <span class="muted">(@Store.All.Count, sample)</span></h2>
-        <button type="button" class="ghost" disabled="@busy" @onclick="Categorize">Label with AI</button>
+        <h2>Where the money went <span class="muted">· last 3 months</span></h2>
+        <button type="button" class="ghost" disabled="@busy" @onclick="Categorize">@(labelling ? "Labelling…" : "Re-label with AI")</button>
     </div>
-    @if (catNote is not null) { <p class="muted small">@catNote</p> }
-    <div class="bycat">
-        @foreach (var g in Store.All.Where(t => t.Kind == TxKind.Debit && !Categories.NonSpend.Contains(t.Category))
-                                .GroupBy(t => t.Category).OrderByDescending(g => g.Sum(t => t.Amount)))
+    @if (catNote is not null) { <p class="muted small note">@catNote</p> }
+    <ul class="bars">
+        @foreach (var g in SpendByCategory)
         {
-            <span class="chip static">@g.Key <b>@QueryEngine.Inr(g.Sum(t => t.Amount))</b></span>
+            <li @onclick="() => filter = filter == g.Category ? null : g.Category" class="@(filter == g.Category ? "on" : "")" title="Show only @g.Category">
+                <span class="cat"><i style="background:@Color(g.Category)"></i>@g.Category</span>
+                <span class="bar"><span style="width:@Pct(g.Total)%;background:@Color(g.Category)"></span></span>
+                <span class="amt">@QueryEngine.Inr(g.Total)</span>
+            </li>
         }
+    </ul>
+</section>
+
+<section class="card">
+    <div class="head">
+        <h2>Transactions <span class="muted">· @Rows.Count() @(filter is null ? "sample rows" : filter)</span></h2>
+        @if (filter is not null) { <button type="button" class="ghost" @onclick="() => filter = null">Show all</button> }
     </div>
+    <p class="muted small">Grey text under each payee is exactly what the AI is allowed to see.</p>
     <table>
         <thead><tr><th>Date</th><th>Payee</th><th>Category</th><th class="r">Amount</th></tr></thead>
         <tbody>
-            @foreach (var t in Store.All.OrderByDescending(t => t.Date).ThenByDescending(t => t.Id).Take(showAll ? 500 : 12))
+            @foreach (var t in Rows.Take(showAll ? 500 : 10))
             {
                 <tr>
-                    <td>@t.Date.ToString("d MMM")</td>
-                    <td><div>@t.Merchant</div><div class="masked" title="What the AI sees">@PiiMasker.Mask(t.Narration)</div></td>
-                    <td>@t.Category</td>
+                    <td class="d">@t.Date.ToString("d MMM")</td>
+                    <td><div class="m">@t.Merchant</div><div class="masked">@PiiMasker.Mask(t.Narration)</div></td>
+                    <td><span class="pill-cat" style="--c:@Color(t.Category)">@t.Category</span></td>
                     <td class="r @(t.Kind == TxKind.Credit ? "in" : "")">@(t.Kind == TxKind.Credit ? "+" : "")@QueryEngine.Inr(t.Amount)</td>
                 </tr>
             }
         </tbody>
     </table>
-    @if (!showAll && Store.All.Count > 12) { <button type="button" class="ghost" @onclick="() => showAll = true">Show all @Store.All.Count</button> }
+    @if (!showAll && Rows.Count() > 10) { <button type="button" class="ghost more" @onclick="() => showAll = true">Show all @Rows.Count()</button> }
 </section>
 
 @code {
     private sealed record Turn(string Question, AskAnswer Answer, long Ms);
+    private sealed record CatTotal(string Category, decimal Total);
 
     private static readonly string[] Suggestions =
     [
@@ -97,12 +146,36 @@
         "What did I spend at Apollo since September?", "Spending by category this month",
     ];
 
+    // one fixed colour per category (identity, never re-ordered by rank)
+    private static readonly Dictionary<string, string> Palette = new()
+    {
+        ["Food"] = "#e8743b", ["Groceries"] = "#19a979", ["Transport"] = "#2a78d6", ["Shopping"] = "#9b5de5",
+        ["Bills"] = "#d4a017", ["Entertainment"] = "#ed4a7b", ["Health"] = "#13a4b4", ["Rent & EMI"] = "#5470c6",
+        ["Investments"] = "#6b8e23", ["Family"] = "#c06c84", ["Transfers"] = "#8a8f98", ["Other"] = "#8a8f98",
+    };
+    private static string Color(string c) => Palette.GetValueOrDefault(c, "#8a8f98");
+
     private string question = "";
-    private bool busy, showAll;
-    private string? catNote;
+    private string? pending, catNote, filter, lastSource;
+    private bool busy, labelling, showAll;
     private readonly List<Turn> history = [];
 
-    private string BudgetText => $"AI calls used: {Budget.Usage.LastMinute}/{Budget.Usage.PerMinute} this minute, {Budget.Usage.Today}/{Budget.Usage.PerDay} today";
+    private DateOnly Today => DateOnly.FromDateTime(Clock.GetLocalNow().DateTime);
+    private DateOnly MonthStart => new(Today.Year, Today.Month, 1);
+    private IEnumerable<Transaction> Spend => Store.All.Where(t => t.Kind == TxKind.Debit && !Categories.NonSpend.Contains(t.Category));
+    private decimal MonthSpend => Spend.Where(t => t.Date >= MonthStart).Sum(t => t.Amount);
+    private int MonthCount => Spend.Count(t => t.Date >= MonthStart);
+    private decimal LastMonthSpend => Spend.Where(t => t.Date >= MonthStart.AddMonths(-1) && t.Date < MonthStart).Sum(t => t.Amount);
+    private IGrouping<string, Transaction>? TopCategory => Spend.GroupBy(t => t.Category).OrderByDescending(g => g.Sum(t => t.Amount)).FirstOrDefault();
+    private List<CatTotal> SpendByCategory => Spend.GroupBy(t => t.Category).Select(g => new CatTotal(g.Key, g.Sum(t => t.Amount)))
+        .OrderByDescending(x => x.Total).ToList();
+    private double Pct(decimal v) { var max = SpendByCategory.FirstOrDefault()?.Total ?? 1; return max == 0 ? 0 : Math.Max(2, (double)(v / max * 100)); }
+    private IEnumerable<Transaction> Rows => Store.All.Where(t => filter is null || t.Category == filter).OrderByDescending(t => t.Date).ThenByDescending(t => t.Id);
+    private string MonthName(int offset) => MonthStart.AddMonths(offset).ToString("MMMM");
+
+    private IReadOnlyList<string> Providers => Status.Model == "none" ? [] : Status.Model.Split(" → ").Select(p => p.Split(" @ ").Last()).ToList();
+    private string? LastSource => lastSource;
+    private static string ShortModel(string? m) => m is null ? "model" : m.Replace(" (", " · ").TrimEnd(')');
 
     private Task AskThis(string s) { question = s; return Submit(); }
 
@@ -110,35 +183,30 @@
     {
         var text = question.Trim();
         if (busy || text.Length == 0) return;
-        busy = true;
+        busy = true; pending = text; question = "";
         var sw = System.Diagnostics.Stopwatch.StartNew();
         try
         {
             var a = await Ask.AskAsync(text, Store.All);
             history.Insert(0, new Turn(text, a, sw.ElapsedMilliseconds));
-            if (history.Count > 6) history.RemoveAt(history.Count - 1);
-            question = "";
+            if (history.Count > 5) history.RemoveAt(history.Count - 1);
+            lastSource = !a.UsedAi ? "rules" : Providers.FirstOrDefault(p => a.Model?.Contains(p) == true) ?? Providers.FirstOrDefault();
         }
-        finally { busy = false; }
+        finally { busy = false; pending = null; }
     }
 
     private async Task Categorize()
     {
-        busy = true;
+        busy = labelling = true;
         try
         {
             var labels = await Categorizer.CategorizeAsync(Store.All);
             Store.Apply(labels);
             catNote = Categorizer is AiCategorizer ai
-                ? $"{ai.LastAiCount} rows labelled by the AI in {ai.LastCalls} call{(ai.LastCalls == 1 ? "" : "s")} (one line per payee, not per row), " +
-                  $"{ai.LastRuleCount} by keyword rules{(ai.LastRuleCount > 0 ? " (AI busy or over the demo limit)" : "")}."
-                : "Labelled by keyword rules (no AI key configured).";
+                ? $"{ai.LastAiCount} rows labelled by the AI in {ai.LastCalls} call{(ai.LastCalls == 1 ? "" : "s")} (one line per payee, not per row)" +
+                  (ai.LastRuleCount > 0 ? $", {ai.LastRuleCount} by keyword rules (AI busy or over the demo limit)." : ".")
+                : "Labelled by keyword rules (no AI configured).";
         }
-        finally { busy = false; }
+        finally { busy = labelling = false; }
     }
-
-    private static string QueryText(SpendQuery q) =>
-        $"metric={q.Metric}" + (q.Category is null ? "" : $", category={q.Category}") + (q.Merchant is null ? "" : $", merchant={q.Merchant}") +
-        (q.From is null ? "" : $", from={q.From:yyyy-MM-dd}") + (q.To is null ? "" : $", to={q.To:yyyy-MM-dd}") + $", kind={q.Kind}" +
-        (q.Metric is "top_merchants" or "list" ? $", limit={q.Limit}" : "");
 }
